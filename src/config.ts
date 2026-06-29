@@ -35,6 +35,9 @@ const MIN_MAX_MESSAGE_LENGTH = 100
 const MAX_DISCORD_MESSAGE_LENGTH = 2000
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off'])
+const DISCORD_SNOWFLAKE_PATTERN = /^\d{15,25}$/
+const DISCORD_CHANNEL_URL_PATTERN =
+  /^https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/(\d{15,25})(?:\/.*)?$/i
 
 export type PlainLyricsMode = 'off' | 'once'
 export type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace'
@@ -195,16 +198,20 @@ export const loadConfig = (): AppConfig => {
   }
 
   const env = parsedEnv.data
+  const channelId = normalizeDiscordChannelId(env.DISCORD_CHANNEL_ID)
+  const dmRecipientTarget = normalizeDiscordDmRecipientId(env.DISCORD_DM_RECIPIENT_ID)
+  const dmChannelId = getDiscordChannelIdFromUrl(env.DISCORD_DM_RECIPIENT_ID)
+  const resolvedChannelId = channelId ?? dmChannelId
 
-  if (!env.DISCORD_CHANNEL_ID && !env.DISCORD_DM_RECIPIENT_ID) {
+  if (!resolvedChannelId && !dmRecipientTarget) {
     throw new ConfigError('Either DISCORD_CHANNEL_ID or DISCORD_DM_RECIPIENT_ID is required')
   }
 
   return {
     discord: {
       token: env.DISCORD_TOKEN,
-      channelId: env.DISCORD_CHANNEL_ID,
-      dmRecipientId: env.DISCORD_DM_RECIPIENT_ID,
+      channelId: resolvedChannelId,
+      dmRecipientId: resolvedChannelId ? undefined : dmRecipientTarget,
       apiBaseUrl: env.DISCORD_API_BASE_URL,
       gatewayUrl: env.DISCORD_GATEWAY_URL,
       gatewayEnabled: env.DISCORD_GATEWAY_ENABLED,
@@ -239,4 +246,47 @@ export const loadConfig = (): AppConfig => {
       sendNoLyricsMessage: env.OWOTIFY_SEND_NO_LYRICS_MESSAGE,
     },
   }
+}
+
+const normalizeDiscordChannelId = (value?: string): string | undefined => {
+  if (!value) {
+    return undefined
+  }
+
+  const trimmedValue = value.trim()
+  const channelIdFromUrl = getDiscordChannelIdFromUrl(trimmedValue)
+
+  if (channelIdFromUrl) {
+    return channelIdFromUrl
+  }
+
+  if (!DISCORD_SNOWFLAKE_PATTERN.test(trimmedValue)) {
+    throw new ConfigError(
+      'DISCORD_CHANNEL_ID must be a Discord channel ID or a /channels/... Discord URL',
+    )
+  }
+
+  return trimmedValue
+}
+
+const normalizeDiscordDmRecipientId = (value?: string): string | undefined => {
+  if (!value || getDiscordChannelIdFromUrl(value)) {
+    return undefined
+  }
+
+  const trimmedValue = value.trim()
+
+  if (!DISCORD_SNOWFLAKE_PATTERN.test(trimmedValue)) {
+    throw new ConfigError('DISCORD_DM_RECIPIENT_ID must be a Discord user ID')
+  }
+
+  return trimmedValue
+}
+
+const getDiscordChannelIdFromUrl = (value?: string): string | undefined => {
+  if (!value) {
+    return undefined
+  }
+
+  return DISCORD_CHANNEL_URL_PATTERN.exec(value.trim())?.[1]
 }

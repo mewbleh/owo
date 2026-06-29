@@ -102,6 +102,26 @@ DISCORD_DM_RECIPIENT_ID=123456789012345678
 `DISCORD_DM_RECIPIENT_ID` must be the target user's ID. If you already have an existing DM
 channel ID, put that value in `DISCORD_CHANNEL_ID` instead.
 
+Discord DM URLs are channel URLs. For example:
+
+```text
+https://discord.com/channels/@me/1521022683905523834
+```
+
+Use either the full URL or the last ID as `DISCORD_CHANNEL_ID`:
+
+```env
+DISCORD_CHANNEL_ID=https://discord.com/channels/@me/1521022683905523834
+DISCORD_DM_RECIPIENT_ID=
+```
+
+or:
+
+```env
+DISCORD_CHANNEL_ID=1521022683905523834
+DISCORD_DM_RECIPIENT_ID=
+```
+
 Run locally:
 
 ```bash
@@ -155,8 +175,8 @@ All runtime configuration is environment-based.
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | - | Discord user token used for REST and Gateway auth. |
-| `DISCORD_CHANNEL_ID` | Conditional | - | Target guild/text/DM channel ID. Required unless `DISCORD_DM_RECIPIENT_ID` is set. |
-| `DISCORD_DM_RECIPIENT_ID` | Conditional | - | User ID to DM. Used when `DISCORD_CHANNEL_ID` is empty. Takes priority when both are set. |
+| `DISCORD_CHANNEL_ID` | Conditional | - | Target guild/text/DM channel ID or Discord `/channels/...` URL. Required unless `DISCORD_DM_RECIPIENT_ID` is set. |
+| `DISCORD_DM_RECIPIENT_ID` | Conditional | - | User ID to DM. Used only when `DISCORD_CHANNEL_ID` is empty. |
 | `DISCORD_API_BASE_URL` | No | `https://discord.com/api/v10` | Discord REST API base URL. |
 | `DISCORD_GATEWAY_URL` | No | `wss://gateway.discord.gg/?v=10&encoding=json` | Discord Gateway URL. |
 | `DISCORD_GATEWAY_ENABLED` | No | `true` | Enables Gateway session validation. |

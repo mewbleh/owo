@@ -186,13 +186,13 @@ export class DiscordMessenger {
   }
 
   private async resolveTargetChannel(): Promise<void> {
-    if (this.config.dmRecipientId) {
-      this.targetChannelId = await this.createDmChannel(this.config.dmRecipientId)
+    if (this.config.channelId) {
+      this.targetChannelId = this.config.channelId
       return
     }
 
-    if (this.config.channelId) {
-      this.targetChannelId = this.config.channelId
+    if (this.config.dmRecipientId) {
+      this.targetChannelId = await this.createDmChannel(this.config.dmRecipientId)
       return
     }
 

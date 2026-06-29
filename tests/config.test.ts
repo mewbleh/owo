@@ -37,6 +37,26 @@ describe('loadConfig', () => {
     expect(config.discord.dmRecipientId).toBe('123456789012345678')
   })
 
+  it('extracts a DM channel ID from a Discord channel URL', () => {
+    const config = loadConfigWithEnv({
+      DISCORD_CHANNEL_ID: 'https://discord.com/channels/@me/1521022683905523834',
+      DISCORD_DM_RECIPIENT_ID: '',
+    })
+
+    expect(config.discord.channelId).toBe('1521022683905523834')
+    expect(config.discord.dmRecipientId).toBeUndefined()
+  })
+
+  it('treats a Discord channel URL in the DM recipient slot as a channel target', () => {
+    const config = loadConfigWithEnv({
+      DISCORD_CHANNEL_ID: '',
+      DISCORD_DM_RECIPIENT_ID: 'https://discord.com/channels/@me/1521022683905523834',
+    })
+
+    expect(config.discord.channelId).toBe('1521022683905523834')
+    expect(config.discord.dmRecipientId).toBeUndefined()
+  })
+
   it('requires either a Discord channel ID or DM recipient ID', () => {
     expect(() =>
       loadConfigWithEnv({
