@@ -1,6 +1,7 @@
 import type pino from 'pino'
 
 import type { AppConfig } from './config'
+import type { OutputMode } from './config'
 import type { DiscordMessenger } from './discord/discordMessenger'
 import type { LyricsDocument, LyricsProvider, SpotifyTrack, SyncedLyricLine } from './types'
 import { formatTemplate } from './utils/template'
@@ -14,6 +15,9 @@ const MIN_SLEEP_MS = 50
 const NO_NEXT_LINE_INDEX = 0
 const STATUS_ENABLED_LABEL = 'enabled'
 const STATUS_STOPPED_LABEL = 'stopped'
+const OUTPUT_MODE_MESSAGE = 'message'
+const OUTPUT_MODE_STATUS = 'status'
+const OUTPUT_MODE_BOTH = 'both'
 
 interface TrackSession {
   track: SpotifyTrack
@@ -25,7 +29,8 @@ interface TrackSession {
 
 export class OwotifyRunner {
   private isStopping = false
-  private isLyricStreamingEnabled = true
+  private isLyricStreamingEnabled: boolean
+  private outputMode: OutputMode
   private session: TrackSession | null = null
 
   constructor(
@@ -34,12 +39,20 @@ export class OwotifyRunner {
     private readonly spotifyClient: SpotifyClient,
     private readonly lyricsProvider: LyricsProvider,
     private readonly discordMessenger: DiscordMessenger,
-  ) {}
+  ) {
+    this.isLyricStreamingEnabled = config.owotify.autoStart
+    this.outputMode = config.owotify.outputMode
+  }
 
   async start(): Promise<void> {
     this.logger.info('Starting owotify')
+    if (this.usesStatusMode() && !this.config.discord.gatewayEnabled) {
+      throw new Error('Status output mode requires DISCORD_GATEWAY_ENABLED=true')
+    }
+
     this.discordMessenger.onCommand((command) => this.handleDiscordCommand(command))
     await this.discordMessenger.login()
+    this.updateIdleStatus()
     this.logger.info('Discord client connected')
 
     while (!this.isStopping) {
@@ -71,6 +84,7 @@ export class OwotifyRunner {
 
     if (!playback || !playback.isPlaying) {
       this.session = null
+      this.updateIdleStatus()
       return
     }
 
@@ -104,9 +118,15 @@ export class OwotifyRunner {
     }
 
     if (this.config.owotify.sendTrackHeader) {
-      await this.discordMessenger.sendMessage(
-        formatTemplate(this.config.owotify.trackHeaderTemplate, this.getTemplateValues(track, null)),
-      )
+      const values = this.getTemplateValues(track, null)
+
+      if (this.sendsMessages()) {
+        await this.discordMessenger.sendMessage(
+          formatTemplate(this.config.owotify.trackHeaderTemplate, values),
+        )
+      }
+
+      this.updateStatusFromTemplate(this.config.owotify.trackHeaderTemplate, values)
     }
 
     await this.sendFallbackLyricsIfNeeded(this.session)
@@ -117,54 +137,66 @@ export class OwotifyRunner {
     switch (command.name) {
       case 'start':
       case 'resume':
-        await this.enableLyricStreaming()
+        await this.enableLyricStreaming(command)
         return
       case 'stop':
       case 'pause':
-        await this.disableLyricStreaming()
+        await this.disableLyricStreaming(command)
         return
       case 'status':
-        await this.sendStatus()
+        await this.sendStatus(command)
+        return
+      case 'mode':
+      case 'output':
+        await this.handleModeCommand(command, command.args[0])
+        return
+      case 'target':
+      case 'channel':
+      case 'dm':
+        await this.handleTargetCommand(command)
         return
       case 'skip':
       case 'reload':
-        await this.reloadCurrentTrack()
+        await this.reloadCurrentTrack(command)
         return
       case 'help':
       case 'commands':
-        await this.sendCommandHelp()
+        await this.sendCommandHelp(command)
         return
       case 'shutdown':
       case 'exit':
-        await this.shutdownFromCommand()
+        await this.shutdownFromCommand(command)
         return
       default:
-        await this.discordMessenger.sendMessage(
+        await this.replyToCommand(
+          command,
           `Unknown owotify command: ${command.name}. Try ${this.config.owotify.commandPrefix} help.`,
         )
     }
   }
 
-  private async enableLyricStreaming(): Promise<void> {
+  private async enableLyricStreaming(command: DiscordMessageCommand): Promise<void> {
     this.isLyricStreamingEnabled = true
     this.session = null
-    await this.discordMessenger.sendMessage(
+    await this.replyToCommand(
+      command,
       'owotify lyric posting armed. Lyrics will start after Spotify reports active playback.',
     )
   }
 
-  private async disableLyricStreaming(): Promise<void> {
+  private async disableLyricStreaming(command: DiscordMessageCommand): Promise<void> {
     this.isLyricStreamingEnabled = false
     this.session = null
-    await this.discordMessenger.sendMessage('owotify lyric posting stopped. Process is still online.')
+    this.updateIdleStatus()
+    await this.replyToCommand(command, 'owotify lyric posting stopped. Process is still online.')
   }
 
-  private async reloadCurrentTrack(): Promise<void> {
+  private async reloadCurrentTrack(command: DiscordMessageCommand): Promise<void> {
     this.session = null
-    await this.discordMessenger.sendMessage('owotify will reload the current track on the next poll.')
+    await this.replyToCommand(command, 'owotify will reload the current track on the next poll.')
   }
 
-  private async sendStatus(): Promise<void> {
+  private async sendStatus(command: DiscordMessageCommand): Promise<void> {
     const status = this.isLyricStreamingEnabled ? STATUS_ENABLED_LABEL : STATUS_STOPPED_LABEL
     const track = this.session
       ? `${this.session.track.name} - ${this.session.track.artists.join(', ')}`
@@ -172,9 +204,12 @@ export class OwotifyRunner {
     const syncedLineCount = this.session?.lyrics?.syncedLines.length ?? 0
     const nextLineIndex = this.session?.nextLineIndex ?? 0
 
-    await this.discordMessenger.sendMessage(
+    await this.replyToCommand(
+      command,
       [
         `owotify status: ${status}`,
+        `output mode: ${this.outputMode}`,
+        `target: ${this.discordMessenger.getTargetSummary()}`,
         `track: ${track}`,
         `synced lines: ${syncedLineCount}`,
         `next line: ${nextLineIndex}`,
@@ -182,15 +217,96 @@ export class OwotifyRunner {
     )
   }
 
-  private async sendCommandHelp(): Promise<void> {
+  private async handleModeCommand(command: DiscordMessageCommand, mode?: string): Promise<void> {
+    if (!mode) {
+      await this.replyToCommand(command, `owotify output mode: ${this.outputMode}`)
+      return
+    }
+
+    if (!this.isOutputMode(mode)) {
+      await this.replyToCommand(command, 'Unknown mode. Use message, status, or both.')
+      return
+    }
+
+    if ((mode === OUTPUT_MODE_STATUS || mode === OUTPUT_MODE_BOTH) && !this.config.discord.gatewayEnabled) {
+      await this.replyToCommand(command, 'Status mode requires DISCORD_GATEWAY_ENABLED=true.')
+      return
+    }
+
+    this.outputMode = mode
+    this.session = null
+    this.updateIdleStatus()
+    await this.replyToCommand(command, `owotify output mode set to ${mode}.`)
+  }
+
+  private async handleTargetCommand(command: DiscordMessageCommand): Promise<void> {
+    const [subcommand = 'show', targetValue] =
+      command.name === 'target' ? command.args : [command.name, command.args[0]]
+
+    try {
+      switch (subcommand) {
+        case 'show':
+        case 'status':
+          await this.replyToCommand(command, `owotify target: ${this.discordMessenger.getTargetSummary()}`)
+          return
+        case 'here':
+          await this.discordMessenger.setTargetChannel(command.channelId)
+          await this.replyToCommand(command, `owotify target set to this channel: ${command.channelId}`)
+          return
+        case 'channel':
+          if (!targetValue) {
+            await this.replyToCommand(command, 'Usage: owo target channel <channel_id_or_url>')
+            return
+          }
+
+          await this.discordMessenger.setTargetChannel(targetValue)
+          await this.replyToCommand(command, `owotify target set to ${this.discordMessenger.getTargetSummary()}`)
+          return
+        case 'dm':
+          if (!targetValue) {
+            await this.replyToCommand(command, 'Usage: owo target dm <user_id>')
+            return
+          }
+
+          await this.discordMessenger.setTargetDmRecipient(targetValue)
+          await this.replyToCommand(command, `owotify target set to ${this.discordMessenger.getTargetSummary()}`)
+          return
+        case 'reset':
+        case 'env':
+          await this.discordMessenger.resetTarget()
+          await this.replyToCommand(
+            command,
+            `owotify target reset to ${this.discordMessenger.getTargetSummary()}`,
+          )
+          return
+        default:
+          await this.replyToCommand(
+            command,
+            'Unknown target command. Use: owo target show|here|channel <id/url>|dm <user_id>|reset',
+          )
+      }
+    } catch (error) {
+      const safeError = toSafeLogError(error)
+      await this.replyToCommand(command, `Failed to update target: ${safeError.message}`)
+    }
+  }
+
+  private async sendCommandHelp(command: DiscordMessageCommand): Promise<void> {
     const prefix = this.config.owotify.commandPrefix
 
-    await this.discordMessenger.sendMessage(
+    await this.replyToCommand(
+      command,
       [
         'owotify commands:',
         `${prefix} start - start lyric posting`,
         `${prefix} stop - stop lyric posting but keep the process online`,
         `${prefix} status - show current state`,
+        `${prefix} mode message|status|both - choose chat messages, Discord status, or both`,
+        `${prefix} target show - show the current output target`,
+        `${prefix} target here - send output to this channel or DM`,
+        `${prefix} target channel <id/url> - send output to a channel or DM channel`,
+        `${prefix} target dm <user_id> - create/reuse a DM and send output there`,
+        `${prefix} target reset - reset output target to .env`,
         `${prefix} skip - reload the current track and lyrics`,
         `${prefix} help - show this command list`,
         `${prefix} shutdown - stop the process`,
@@ -198,9 +314,14 @@ export class OwotifyRunner {
     )
   }
 
-  private async shutdownFromCommand(): Promise<void> {
-    await this.discordMessenger.sendMessage('owotify shutting down.')
+  private async shutdownFromCommand(command: DiscordMessageCommand): Promise<void> {
+    await this.replyToCommand(command, 'owotify shutting down.')
+    this.discordMessenger.clearCustomStatus(this.config.owotify.presenceStatus)
     await this.stop()
+  }
+
+  private async replyToCommand(command: DiscordMessageCommand, content: string): Promise<void> {
+    await this.discordMessenger.sendMessageToChannel(command.channelId, content)
   }
 
   private async sendDueLyrics(session: TrackSession, progressMs: number): Promise<void> {
@@ -220,12 +341,20 @@ export class OwotifyRunner {
         continue
       }
 
-      await this.discordMessenger.sendMessage(
-        formatTemplate(
-          this.config.owotify.lyricLineTemplate,
-          this.getTemplateValues(session.track, line),
-        ),
-      )
+      const templateValues = this.getTemplateValues(session.track, line)
+
+      if (this.sendsMessages()) {
+        await this.discordMessenger.sendMessage(
+          formatTemplate(this.config.owotify.lyricLineTemplate, templateValues),
+        )
+      }
+
+      if (this.updatesStatus()) {
+        this.discordMessenger.updateCustomStatus(
+          formatTemplate(this.config.owotify.statusTemplate, templateValues),
+          this.config.owotify.presenceStatus,
+        )
+      }
       sentLineCount += 1
     }
   }
@@ -238,9 +367,12 @@ export class OwotifyRunner {
     const values = this.getTemplateValues(session.track, null, session.lyrics)
 
     if (session.lyrics?.plainLyrics && this.config.owotify.plainLyricsMode === 'once') {
-      await this.discordMessenger.sendMessage(
-        formatTemplate(this.config.owotify.plainLyricsTemplate, values),
-      )
+      if (this.sendsMessages()) {
+        await this.discordMessenger.sendMessage(
+          formatTemplate(this.config.owotify.plainLyricsTemplate, values),
+        )
+      }
+      this.updateStatusFromTemplate(this.config.owotify.noLyricsTemplate, values)
       session.hasSentNoLyricsMessage = true
       return
     }
@@ -249,10 +381,51 @@ export class OwotifyRunner {
       return
     }
 
-    await this.discordMessenger.sendMessage(
-      formatTemplate(this.config.owotify.noLyricsTemplate, values),
-    )
+    if (this.sendsMessages()) {
+      await this.discordMessenger.sendMessage(
+        formatTemplate(this.config.owotify.noLyricsTemplate, values),
+      )
+    }
+    this.updateStatusFromTemplate(this.config.owotify.noLyricsTemplate, values)
     session.hasSentNoLyricsMessage = true
+  }
+
+  private sendsMessages(): boolean {
+    return this.outputMode === OUTPUT_MODE_MESSAGE || this.outputMode === OUTPUT_MODE_BOTH
+  }
+
+  private updatesStatus(): boolean {
+    return this.outputMode === OUTPUT_MODE_STATUS || this.outputMode === OUTPUT_MODE_BOTH
+  }
+
+  private usesStatusMode(): boolean {
+    return this.config.owotify.outputMode === OUTPUT_MODE_STATUS || this.config.owotify.outputMode === OUTPUT_MODE_BOTH
+  }
+
+  private isOutputMode(mode: string): mode is OutputMode {
+    return mode === OUTPUT_MODE_MESSAGE || mode === OUTPUT_MODE_STATUS || mode === OUTPUT_MODE_BOTH
+  }
+
+  private updateIdleStatus(): void {
+    if (!this.updatesStatus()) {
+      return
+    }
+
+    this.discordMessenger.updateCustomStatus(
+      this.config.owotify.statusIdleTemplate,
+      this.config.owotify.presenceStatus,
+    )
+  }
+
+  private updateStatusFromTemplate(template: string, values: TemplateValues): void {
+    if (!this.updatesStatus()) {
+      return
+    }
+
+    this.discordMessenger.updateCustomStatus(
+      formatTemplate(template, values),
+      this.config.owotify.presenceStatus,
+    )
   }
 
   private hasTrackRewound(session: TrackSession, progressMs: number): boolean {

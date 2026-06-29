@@ -2,6 +2,11 @@ import 'dotenv/config'
 
 import { z } from 'zod'
 
+import {
+  getDiscordChannelIdFromUrl,
+  normalizeDiscordChannelId,
+  normalizeDiscordDmRecipientId,
+} from './discord/discordTarget'
 import { ConfigError } from './errors'
 
 const DEFAULT_LOG_LEVEL = 'info'
@@ -24,7 +29,11 @@ const DEFAULT_REWIND_RESET_THRESHOLD_MS = 3000
 const DEFAULT_MIN_MESSAGE_INTERVAL_MS = 1100
 const DEFAULT_MAX_LINES_PER_TICK = 4
 const DEFAULT_MAX_MESSAGE_LENGTH = 1900
-const DEFAULT_COMMAND_PREFIX = '!owo'
+const DEFAULT_COMMAND_PREFIX = 'owo'
+const DEFAULT_OUTPUT_MODE = 'message'
+const DEFAULT_PRESENCE_STATUS = 'online'
+const DEFAULT_STATUS_TEMPLATE = '{line}'
+const DEFAULT_STATUS_IDLE_TEMPLATE = 'owotify idle'
 const DEFAULT_TRACK_HEADER_TEMPLATE = 'Now playing: {track} - {artist}'
 const DEFAULT_LYRIC_LINE_TEMPLATE = '{line}'
 const DEFAULT_NO_LYRICS_TEMPLATE = 'No synced lyrics found for {track} - {artist}.'
@@ -35,12 +44,11 @@ const MIN_MAX_MESSAGE_LENGTH = 100
 const MAX_DISCORD_MESSAGE_LENGTH = 2000
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off'])
-const DISCORD_SNOWFLAKE_PATTERN = /^\d{15,25}$/
-const DISCORD_CHANNEL_URL_PATTERN =
-  /^https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/(\d{15,25})(?:\/.*)?$/i
 
 export type PlainLyricsMode = 'off' | 'once'
 export type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace'
+export type OutputMode = 'message' | 'status' | 'both'
+export type PresenceStatus = 'online' | 'idle' | 'dnd' | 'invisible'
 
 export interface AppConfig {
   discord: {
@@ -70,6 +78,11 @@ export interface AppConfig {
     minMessageIntervalMs: number
     maxLinesPerTick: number
     maxMessageLength: number
+    autoStart: boolean
+    outputMode: OutputMode
+    presenceStatus: PresenceStatus
+    statusTemplate: string
+    statusIdleTemplate: string
     commandsEnabled: boolean
     commandPrefix: string
     sendTrackHeader: boolean
@@ -163,6 +176,19 @@ const envSchema = z.object({
     MIN_MAX_MESSAGE_LENGTH,
     MAX_DISCORD_MESSAGE_LENGTH,
   ),
+  OWOTIFY_AUTO_START: booleanFromEnv(false),
+  OWOTIFY_OUTPUT_MODE: z
+    .preprocess(emptyStringToUndefined, z.enum(['message', 'status', 'both']).optional())
+    .default(DEFAULT_OUTPUT_MODE),
+  OWOTIFY_PRESENCE_STATUS: z
+    .preprocess(emptyStringToUndefined, z.enum(['online', 'idle', 'dnd', 'invisible']).optional())
+    .default(DEFAULT_PRESENCE_STATUS),
+  OWOTIFY_STATUS_TEMPLATE: z
+    .preprocess(emptyStringToUndefined, z.string().optional())
+    .default(DEFAULT_STATUS_TEMPLATE),
+  OWOTIFY_STATUS_IDLE_TEMPLATE: z
+    .preprocess(emptyStringToUndefined, z.string().optional())
+    .default(DEFAULT_STATUS_IDLE_TEMPLATE),
   OWOTIFY_COMMANDS_ENABLED: booleanFromEnv(true),
   OWOTIFY_COMMAND_PREFIX: z
     .preprocess(emptyStringToUndefined, z.string().min(1).optional())
@@ -235,6 +261,11 @@ export const loadConfig = (): AppConfig => {
       minMessageIntervalMs: env.OWOTIFY_MIN_MESSAGE_INTERVAL_MS,
       maxLinesPerTick: env.OWOTIFY_MAX_LINES_PER_TICK,
       maxMessageLength: env.OWOTIFY_MAX_MESSAGE_LENGTH,
+      autoStart: env.OWOTIFY_AUTO_START,
+      outputMode: env.OWOTIFY_OUTPUT_MODE as OutputMode,
+      presenceStatus: env.OWOTIFY_PRESENCE_STATUS as PresenceStatus,
+      statusTemplate: env.OWOTIFY_STATUS_TEMPLATE,
+      statusIdleTemplate: env.OWOTIFY_STATUS_IDLE_TEMPLATE,
       commandsEnabled: env.OWOTIFY_COMMANDS_ENABLED,
       commandPrefix: env.OWOTIFY_COMMAND_PREFIX,
       sendTrackHeader: env.OWOTIFY_SEND_TRACK_HEADER,
@@ -246,47 +277,4 @@ export const loadConfig = (): AppConfig => {
       sendNoLyricsMessage: env.OWOTIFY_SEND_NO_LYRICS_MESSAGE,
     },
   }
-}
-
-const normalizeDiscordChannelId = (value?: string): string | undefined => {
-  if (!value) {
-    return undefined
-  }
-
-  const trimmedValue = value.trim()
-  const channelIdFromUrl = getDiscordChannelIdFromUrl(trimmedValue)
-
-  if (channelIdFromUrl) {
-    return channelIdFromUrl
-  }
-
-  if (!DISCORD_SNOWFLAKE_PATTERN.test(trimmedValue)) {
-    throw new ConfigError(
-      'DISCORD_CHANNEL_ID must be a Discord channel ID or a /channels/... Discord URL',
-    )
-  }
-
-  return trimmedValue
-}
-
-const normalizeDiscordDmRecipientId = (value?: string): string | undefined => {
-  if (!value || getDiscordChannelIdFromUrl(value)) {
-    return undefined
-  }
-
-  const trimmedValue = value.trim()
-
-  if (!DISCORD_SNOWFLAKE_PATTERN.test(trimmedValue)) {
-    throw new ConfigError('DISCORD_DM_RECIPIENT_ID must be a Discord user ID')
-  }
-
-  return trimmedValue
-}
-
-const getDiscordChannelIdFromUrl = (value?: string): string | undefined => {
-  if (!value) {
-    return undefined
-  }
-
-  return DISCORD_CHANNEL_URL_PATTERN.exec(value.trim())?.[1]
 }

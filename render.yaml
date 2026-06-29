@@ -29,4 +29,10 @@ services:
       - key: OWOTIFY_COMMANDS_ENABLED
         value: "true"
       - key: OWOTIFY_COMMAND_PREFIX
-        value: "!owo"
+        value: "owo"
+      - key: OWOTIFY_AUTO_START
+        value: "false"
+      - key: OWOTIFY_OUTPUT_MODE
+        value: "message"
+      - key: OWOTIFY_PRESENCE_STATUS
+        value: "online"

@@ -23,6 +23,7 @@ selfbot framework.
 - Supports custom message templates.
 - Includes raw Discord REST/Gateway transport.
 - Supports Discord selfbot control commands.
+- Supports manual lyric posting and Discord custom-status output mode.
 - Avoids accidental mentions with `allowed_mentions: { parse: [] }`.
 - Retries Discord `429` responses with the returned delay.
 - Ships Docker, Docker Compose, Render, Railway, Nixpacks, and Procfile metadata.
@@ -131,22 +132,37 @@ yarn dev
 ## Selfbot Commands
 
 Commands are sent in the configured Discord channel or DM from the same account running the
-selfbot. The default prefix is `!owo`.
+selfbot. The default prefix is `owo`.
+
+Lyric posting is manual by default. Start the process, then send `owo start` when you want
+owotify to begin posting for the next active Spotify playback.
 
 | Command | Description |
 | --- | --- |
-| `!owo start` | Arm lyric posting. Lyrics begin when Spotify reports active playback. |
-| `!owo stop` | Stop lyric posting while keeping the process online. |
-| `!owo pause` | Alias for `stop`. |
-| `!owo resume` | Alias for `start`. |
-| `!owo status` | Show whether lyric posting is enabled and what track is loaded. |
-| `!owo skip` | Clear the current track session and reload lyrics on the next poll. |
-| `!owo reload` | Alias for `skip`. |
-| `!owo help` | Show available commands. |
-| `!owo shutdown` | Stop lyric posting and shut down the process. |
+| `owo start` | Arm lyric posting. Lyrics begin when Spotify reports active playback. |
+| `owo stop` | Stop lyric posting while keeping the process online. |
+| `owo pause` | Alias for `stop`. |
+| `owo resume` | Alias for `start`. |
+| `owo status` | Show whether lyric posting is enabled and what track is loaded. |
+| `owo mode` | Show the current output mode. |
+| `owo mode message` | Send lyrics as Discord messages. |
+| `owo mode status` | Update Discord custom status instead of sending lyric messages. |
+| `owo mode both` | Send messages and update Discord custom status. |
+| `owo target show` | Show the current lyric output target. |
+| `owo target here` | Override the lyric output target to the channel or DM where you typed the command. |
+| `owo target channel <id/url>` | Override the lyric output target to a channel ID or Discord channel URL. |
+| `owo target dm <user_id>` | Override the lyric output target by creating/reusing a DM with a user ID. |
+| `owo target reset` | Reset the lyric output target back to `.env`. |
+| `owo skip` | Clear the current track session and reload lyrics on the next poll. |
+| `owo reload` | Alias for `skip`. |
+| `owo help` | Show available commands. |
+| `owo shutdown` | Stop lyric posting and shut down the process. |
 
 Commands require `DISCORD_GATEWAY_ENABLED=true`, because they are received through Gateway
 `MESSAGE_CREATE` events.
+
+Target overrides are runtime-only. Restarting owotify or running `owo target reset` returns to
+the target configured in `.env`.
 
 ## Getting Credentials
 
@@ -194,8 +210,13 @@ All runtime configuration is environment-based.
 | `OWOTIFY_MIN_MESSAGE_INTERVAL_MS` | No | `1100` | Minimum delay between Discord messages. |
 | `OWOTIFY_MAX_LINES_PER_TICK` | No | `4` | Maximum lyric lines sent per poll tick. |
 | `OWOTIFY_MAX_MESSAGE_LENGTH` | No | `1900` | Maximum Discord message chunk length. |
+| `OWOTIFY_AUTO_START` | No | `false` | When `false`, lyrics wait for `owo start`. |
+| `OWOTIFY_OUTPUT_MODE` | No | `message` | `message`, `status`, or `both`. |
+| `OWOTIFY_PRESENCE_STATUS` | No | `online` | Presence state for status mode: `online`, `idle`, `dnd`, or `invisible`. |
+| `OWOTIFY_STATUS_TEMPLATE` | No | `{line}` | Discord custom-status template for lyric lines. |
+| `OWOTIFY_STATUS_IDLE_TEMPLATE` | No | `owotify idle` | Custom status shown when stopped or no Spotify playback is active. |
 | `OWOTIFY_COMMANDS_ENABLED` | No | `true` | Enables Discord selfbot commands. |
-| `OWOTIFY_COMMAND_PREFIX` | No | `!owo` | Prefix used for Discord selfbot commands. |
+| `OWOTIFY_COMMAND_PREFIX` | No | `owo` | Prefix used for Discord selfbot commands. |
 | `OWOTIFY_SEND_TRACK_HEADER` | No | `true` | Sends a header when a new track starts. |
 | `OWOTIFY_TRACK_HEADER_TEMPLATE` | No | `Now playing: {track} - {artist}` | New-track message template. |
 | `OWOTIFY_LYRIC_LINE_TEMPLATE` | No | `{line}` | Lyric line template. |

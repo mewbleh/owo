@@ -5,6 +5,7 @@ import WebSocket from 'ws'
 import { HttpRequestError } from '../errors'
 import { parseDiscordCommand } from './commandParser'
 import type { DiscordCommand } from './commandParser'
+import { normalizeDiscordChannelId, normalizeDiscordDmRecipientId } from './discordTarget'
 import { splitMessage } from '../utils/message'
 import { toSafeLogError } from '../utils/safeError'
 import { sleep } from '../utils/sleep'
@@ -19,15 +20,21 @@ const BAD_REQUEST_STATUS = 400
 const MAX_REST_RETRIES = 3
 const RATE_LIMIT_FALLBACK_MS = 1000
 const MAX_ERROR_DETAIL_LENGTH = 500
+const MAX_RECENT_SENT_MESSAGE_IDS = 100
 const MILLISECONDS_PER_SECOND = 1000
 const WEBSOCKET_NORMAL_CLOSE_CODE = 1000
 // ref: https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-gateway-opcodes
 const GATEWAY_OPCODE_DISPATCH = 0
 const GATEWAY_OPCODE_HEARTBEAT = 1
+const GATEWAY_OPCODE_PRESENCE_UPDATE = 3
 const GATEWAY_OPCODE_IDENTIFY = 2
 const GATEWAY_OPCODE_HELLO = 10
 const GATEWAY_READY_EVENT = 'READY'
 const GATEWAY_MESSAGE_CREATE_EVENT = 'MESSAGE_CREATE'
+const CUSTOM_STATUS_ACTIVITY_TYPE = 4
+const MAX_CUSTOM_STATUS_LENGTH = 128
+
+export type DiscordPresenceStatus = 'online' | 'idle' | 'dnd' | 'invisible'
 
 interface DiscordMessengerConfig {
   token: string
@@ -41,6 +48,12 @@ interface DiscordMessengerConfig {
   commandPrefix: string
   minMessageIntervalMs: number
   maxMessageLength: number
+}
+
+interface DiscordTargetState {
+  channelId: string
+  label: string
+  source: 'env' | 'override'
 }
 
 export interface DiscordMessageCommand extends DiscordCommand {
@@ -57,6 +70,10 @@ interface DiscordUserResponse {
 }
 
 interface DiscordDmChannelResponse {
+  id: string
+}
+
+interface DiscordCreateMessageResponse {
   id: string
 }
 
@@ -105,6 +122,17 @@ interface GatewayIdentifyData {
   }
 }
 
+interface GatewayPresenceUpdateData {
+  since: number | null
+  activities: Array<{
+    name: string
+    type: number
+    state?: string
+  }>
+  status: DiscordPresenceStatus
+  afk: boolean
+}
+
 export class DiscordMessenger {
   private readonly restClient: AxiosInstance
   private gatewaySocket: WebSocket | null = null
@@ -112,7 +140,10 @@ export class DiscordMessenger {
   private sequence: number | null = null
   private selfUserId: string | null = null
   private targetChannelId: string | null = null
+  private targetState: DiscordTargetState | null = null
   private commandHandler: DiscordMessageCommandHandler | null = null
+  private readonly sentMessageIds = new Set<string>()
+  private lastPresenceKey: string | null = null
   private lastMessageAtMs = 0
   private isConnected = false
 
@@ -156,9 +187,124 @@ export class DiscordMessenger {
 
     for (const chunk of chunks) {
       await this.waitForMessageWindow()
-      await this.createMessage(chunk)
+      await this.createMessage(this.getRequiredTargetChannelId(), chunk)
       this.lastMessageAtMs = Date.now()
     }
+  }
+
+  async sendMessageToChannel(channelId: string, content: string): Promise<void> {
+    if (!this.isConnected) {
+      throw new Error('Discord messenger is not connected')
+    }
+
+    const chunks = splitMessage(content, this.config.maxMessageLength)
+
+    for (const chunk of chunks) {
+      await this.waitForMessageWindow()
+      await this.createMessage(channelId, chunk)
+      this.lastMessageAtMs = Date.now()
+    }
+  }
+
+  getTargetSummary(): string {
+    return this.targetState?.label ?? 'unresolved'
+  }
+
+  async setTargetChannel(channelIdOrUrl: string): Promise<string> {
+    const channelId = normalizeDiscordChannelId(channelIdOrUrl)
+
+    if (!channelId) {
+      throw new Error('Target channel cannot be empty')
+    }
+
+    this.setTargetState({
+      channelId,
+      label: `channel ${channelId} (override)`,
+      source: 'override',
+    })
+
+    return this.getTargetSummary()
+  }
+
+  async setTargetDmRecipient(recipientId: string): Promise<string> {
+    const normalizedRecipientId = normalizeDiscordDmRecipientId(recipientId)
+
+    if (!normalizedRecipientId) {
+      throw new Error('Target DM recipient must be a user ID')
+    }
+
+    const channelId = await this.createDmChannel(normalizedRecipientId)
+
+    this.setTargetState({
+      channelId,
+      label: `dm user ${normalizedRecipientId} -> channel ${channelId} (override)`,
+      source: 'override',
+    })
+
+    return this.getTargetSummary()
+  }
+
+  async resetTarget(): Promise<string> {
+    await this.resolveTargetChannel()
+    return this.getTargetSummary()
+  }
+
+  updateCustomStatus(statusText: string, status: DiscordPresenceStatus): void {
+    const trimmedStatusText = statusText.trim().slice(0, MAX_CUSTOM_STATUS_LENGTH)
+
+    if (trimmedStatusText.length === 0) {
+      this.clearCustomStatus(status)
+      return
+    }
+
+    const presenceKey = `${status}:${trimmedStatusText}`
+
+    if (this.lastPresenceKey === presenceKey) {
+      return
+    }
+
+    this.lastPresenceKey = presenceKey
+
+    // ref: https://discord.com/developers/docs/events/gateway-events#update-presence
+    this.sendGatewayPayload<GatewayPresenceUpdateData>({
+      op: GATEWAY_OPCODE_PRESENCE_UPDATE,
+      d: {
+        since: null,
+        activities: [
+          {
+            name: 'Custom Status',
+            type: CUSTOM_STATUS_ACTIVITY_TYPE,
+            state: trimmedStatusText,
+          },
+        ],
+        status,
+        afk: false,
+      },
+      s: null,
+      t: null,
+    })
+  }
+
+  clearCustomStatus(status: DiscordPresenceStatus): void {
+    const presenceKey = `${status}:`
+
+    if (this.lastPresenceKey === presenceKey) {
+      return
+    }
+
+    this.lastPresenceKey = presenceKey
+
+    this.sendGatewayPayload<GatewayPresenceUpdateData>({
+      op: GATEWAY_OPCODE_PRESENCE_UPDATE,
+      d: {
+        since: null,
+        activities: [],
+        status,
+        afk: false,
+      },
+      s: null,
+      t: null,
+    })
   }
 
   destroy(): void {
@@ -187,12 +333,22 @@ export class DiscordMessenger {
 
   private async resolveTargetChannel(): Promise<void> {
     if (this.config.channelId) {
-      this.targetChannelId = this.config.channelId
+      this.setTargetState({
+        channelId: this.config.channelId,
+        label: `channel ${this.config.channelId} (env)`,
+        source: 'env',
+      })
       return
     }
 
     if (this.config.dmRecipientId) {
-      this.targetChannelId = await this.createDmChannel(this.config.dmRecipientId)
+      const channelId = await this.createDmChannel(this.config.dmRecipientId)
+
+      this.setTargetState({
+        channelId,
+        label: `dm user ${this.config.dmRecipientId} -> channel ${channelId} (env)`,
+        source: 'env',
+      })
       return
     }
 
@@ -236,14 +392,10 @@ export class DiscordMessenger {
     )
   }
 
-  private async createMessage(content: string, retryCount = 0): Promise<void> {
-    if (!this.targetChannelId) {
-      throw new Error('Discord target channel has not been resolved')
-    }
-
-    const endpoint = `/channels/${this.targetChannelId}/messages`
+  private async createMessage(channelId: string, content: string, retryCount = 0): Promise<void> {
+    const endpoint = `/channels/${channelId}/messages`
     // ref: https://discord.com/developers/docs/resources/message#create-message
-    const response = await this.restClient.post(endpoint, {
+    const response = await this.restClient.post<DiscordCreateMessageResponse>(endpoint, {
       allowed_mentions: {
         parse: [],
       },
@@ -252,12 +404,16 @@ export class DiscordMessenger {
 
     if (response.status === RATE_LIMIT_STATUS && retryCount < MAX_REST_RETRIES) {
       await sleep(this.getRateLimitDelayMs(response.data))
-      await this.createMessage(content, retryCount + 1)
+      await this.createMessage(channelId, content, retryCount + 1)
       return
     }
 
     if (response.status < SUCCESS_STATUS_MIN || response.status > SUCCESS_STATUS_MAX) {
       throw new HttpRequestError('Discord create message failed', response.status, endpoint)
+    }
+
+    if (response.data.id) {
+      this.rememberSentMessageId(response.data.id)
     }
   }
 
@@ -391,10 +547,13 @@ export class DiscordMessenger {
   }
 
   private handleMessageCreate(message: GatewayMessageCreateData): void {
+    if (this.sentMessageIds.delete(message.id)) {
+      return
+    }
+
     if (
       !this.config.commandsEnabled ||
       !this.commandHandler ||
-      message.channel_id !== this.targetChannelId ||
       message.author.id !== this.selfUserId
     ) {
       return
@@ -434,6 +593,33 @@ export class DiscordMessenger {
     }
 
     return Math.ceil(retryAfter * MILLISECONDS_PER_SECOND)
+  }
+
+  private rememberSentMessageId(messageId: string): void {
+    this.sentMessageIds.add(messageId)
+
+    if (this.sentMessageIds.size <= MAX_RECENT_SENT_MESSAGE_IDS) {
+      return
+    }
+
+    const oldestMessageId = this.sentMessageIds.values().next().value as string | undefined
+
+    if (oldestMessageId) {
+      this.sentMessageIds.delete(oldestMessageId)
+    }
+  }
+
+  private setTargetState(targetState: DiscordTargetState): void {
+    this.targetState = targetState
+    this.targetChannelId = targetState.channelId
+  }
+
+  private getRequiredTargetChannelId(): string {
+    if (!this.targetChannelId) {
+      throw new Error('Discord target channel has not been resolved')
+    }
+
+    return this.targetChannelId
   }
 
   private isSuccessfulStatus(status: number): boolean {

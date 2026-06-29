@@ -37,6 +37,28 @@ describe('loadConfig', () => {
     expect(config.discord.dmRecipientId).toBe('123456789012345678')
   })
 
+  it('defaults lyric posting to manual start mode', () => {
+    const config = loadConfigWithEnv({
+      DISCORD_CHANNEL_ID: '1521022683905523834',
+      DISCORD_DM_RECIPIENT_ID: '',
+    })
+
+    expect(config.owotify.autoStart).toBe(false)
+  })
+
+  it('loads status output mode configuration', () => {
+    const config = loadConfigWithEnv({
+      DISCORD_CHANNEL_ID: '1521022683905523834',
+      OWOTIFY_OUTPUT_MODE: 'status',
+      OWOTIFY_PRESENCE_STATUS: 'idle',
+      OWOTIFY_STATUS_TEMPLATE: 'music {line}',
+    })
+
+    expect(config.owotify.outputMode).toBe('status')
+    expect(config.owotify.presenceStatus).toBe('idle')
+    expect(config.owotify.statusTemplate).toBe('music {line}')
+  })
+
   it('extracts a DM channel ID from a Discord channel URL', () => {
     const config = loadConfigWithEnv({
       DISCORD_CHANNEL_ID: 'https://discord.com/channels/@me/1521022683905523834',
