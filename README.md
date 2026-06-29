@@ -88,8 +88,15 @@ Fill runtime secrets:
 ```env
 DISCORD_TOKEN=
 DISCORD_CHANNEL_ID=
-# or use DISCORD_DM_RECIPIENT_ID instead of DISCORD_CHANNEL_ID
+DISCORD_DM_RECIPIENT_ID=
 SPOTIFY_REFRESH_TOKEN=
+```
+
+For DM mode, leave `DISCORD_CHANNEL_ID` empty and set `DISCORD_DM_RECIPIENT_ID`:
+
+```env
+DISCORD_CHANNEL_ID=
+DISCORD_DM_RECIPIENT_ID=123456789012345678
 ```
 
 Run locally:
@@ -146,7 +153,7 @@ All runtime configuration is environment-based.
 | --- | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | - | Discord user token used for REST and Gateway auth. |
 | `DISCORD_CHANNEL_ID` | Conditional | - | Target guild/text/DM channel ID. Required unless `DISCORD_DM_RECIPIENT_ID` is set. |
-| `DISCORD_DM_RECIPIENT_ID` | Conditional | - | User ID to DM. Required unless `DISCORD_CHANNEL_ID` is set. Takes priority when both are set. |
+| `DISCORD_DM_RECIPIENT_ID` | Conditional | - | User ID to DM. Used when `DISCORD_CHANNEL_ID` is empty. Takes priority when both are set. |
 | `DISCORD_API_BASE_URL` | No | `https://discord.com/api/v10` | Discord REST API base URL. |
 | `DISCORD_GATEWAY_URL` | No | `wss://gateway.discord.gg/?v=10&encoding=json` | Discord Gateway URL. |
 | `DISCORD_GATEWAY_ENABLED` | No | `true` | Enables Gateway session validation. |
