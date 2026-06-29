@@ -1,0 +1,24 @@
+services:
+  - type: worker
+    name: owotify
+    runtime: docker
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: "production"
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CHANNEL_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: SPOTIFY_REFRESH_TOKEN
+        sync: false
+      - key: SPOTIFY_MARKET
+        value: "US"
+      - key: DISCORD_GATEWAY_ENABLED
+        value: "true"

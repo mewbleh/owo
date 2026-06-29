@@ -1,0 +1,43 @@
+{
+  "name": "owotify",
+  "version": "1.0.0",
+  "description": "Send synced lyrics for the Spotify track currently playing to Discord.",
+  "main": "dist/index.js",
+  "repository": "https://github.com/mewbleh/owo",
+  "author": "mewbleh <mewblehh@gmail.com>",
+  "license": "Apache-2.0",
+  "private": true,
+  "packageManager": "yarn@1.22.22",
+  "engines": {
+    "node": ">=24.0.0",
+    "yarn": ">=1.22.0"
+  },
+  "scripts": {
+    "build": "yarn clean && tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "dev": "tsx watch src/index.ts",
+    "lint": "eslint .",
+    "start": "node dist/index.js",
+    "spotify:auth": "tsx scripts/spotifyAuth.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "pino": "^9.6.0",
+    "ws": "^8.21.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.5",
+    "@types/ws": "^8.18.1",
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.19.0",
+    "vitest": "^2.1.8"
+  }
+}
