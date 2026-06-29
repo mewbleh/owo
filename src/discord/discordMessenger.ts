@@ -15,8 +15,10 @@ const MIN_WAIT_MS = 0
 const SUCCESS_STATUS_MIN = 200
 const SUCCESS_STATUS_MAX = 299
 const RATE_LIMIT_STATUS = 429
+const BAD_REQUEST_STATUS = 400
 const MAX_REST_RETRIES = 3
 const RATE_LIMIT_FALLBACK_MS = 1000
+const MAX_ERROR_DETAIL_LENGTH = 500
 const MILLISECONDS_PER_SECOND = 1000
 const WEBSOCKET_NORMAL_CLOSE_CODE = 1000
 // ref: https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-gateway-opcodes
@@ -56,6 +58,12 @@ interface DiscordUserResponse {
 
 interface DiscordDmChannelResponse {
   id: string
+}
+
+interface DiscordErrorResponse {
+  code?: number
+  message?: string
+  errors?: unknown
 }
 
 interface DiscordRateLimitResponse {
@@ -193,19 +201,39 @@ export class DiscordMessenger {
 
   private async createDmChannel(recipientId: string): Promise<string> {
     // ref: https://discord.com/developers/docs/resources/user#create-dm
-    const response = await this.restClient.post<DiscordDmChannelResponse>('/users/@me/channels', {
+    const documentedResponse = await this.restClient.post<DiscordDmChannelResponse>('/users/@me/channels', {
       recipient_id: recipientId,
     })
 
-    if (response.status < SUCCESS_STATUS_MIN || response.status > SUCCESS_STATUS_MAX) {
+    if (this.isSuccessfulStatus(documentedResponse.status)) {
+      return documentedResponse.data.id
+    }
+
+    if (documentedResponse.status === BAD_REQUEST_STATUS) {
+      const clientResponse = await this.restClient.post<DiscordDmChannelResponse>('/users/@me/channels', {
+        recipients: [recipientId],
+      })
+
+      if (this.isSuccessfulStatus(clientResponse.status)) {
+        return clientResponse.data.id
+      }
+
       throw new HttpRequestError(
-        'Discord create DM channel failed',
-        response.status,
+        this.withDiscordErrorDetail(
+          'Discord create DM channel failed',
+          clientResponse.data,
+          documentedResponse.data,
+        ),
+        clientResponse.status,
         '/users/@me/channels',
       )
     }
 
-    return response.data.id
+    throw new HttpRequestError(
+      this.withDiscordErrorDetail('Discord create DM channel failed', documentedResponse.data),
+      documentedResponse.status,
+      '/users/@me/channels',
+    )
   }
 
   private async createMessage(content: string, retryCount = 0): Promise<void> {
@@ -406,6 +434,39 @@ export class DiscordMessenger {
     }
 
     return Math.ceil(retryAfter * MILLISECONDS_PER_SECOND)
+  }
+
+  private isSuccessfulStatus(status: number): boolean {
+    return status >= SUCCESS_STATUS_MIN && status <= SUCCESS_STATUS_MAX
+  }
+
+  private withDiscordErrorDetail(message: string, data: unknown, fallbackData?: unknown): string {
+    const detail = this.getDiscordErrorDetail(data) || this.getDiscordErrorDetail(fallbackData)
+
+    if (!detail) {
+      return message
+    }
+
+    return `${message}: ${detail}`
+  }
+
+  private getDiscordErrorDetail(data: unknown): string | null {
+    if (!data || typeof data !== 'object') {
+      return null
+    }
+
+    const error = data as DiscordErrorResponse
+    const pieces = [
+      typeof error.code === 'number' ? `code ${error.code}` : null,
+      typeof error.message === 'string' ? error.message : null,
+      error.errors ? JSON.stringify(error.errors) : null,
+    ].filter((piece): piece is string => Boolean(piece))
+
+    if (pieces.length === 0) {
+      return null
+    }
+
+    return pieces.join(' - ').slice(0, MAX_ERROR_DETAIL_LENGTH)
   }
 
   private async waitForMessageWindow(): Promise<void> {

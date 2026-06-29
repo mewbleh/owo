@@ -99,6 +99,9 @@ DISCORD_CHANNEL_ID=
 DISCORD_DM_RECIPIENT_ID=123456789012345678
 ```
 
+`DISCORD_DM_RECIPIENT_ID` must be the target user's ID. If you already have an existing DM
+channel ID, put that value in `DISCORD_CHANNEL_ID` instead.
+
 Run locally:
 
 ```bash
@@ -134,7 +137,7 @@ Commands require `DISCORD_GATEWAY_ENABLED=true`, because they are received throu
 - `DISCORD_CHANNEL_ID`: enable Discord Developer Mode, right-click the target channel, then
   copy the channel ID.
 - `DISCORD_DM_RECIPIENT_ID`: optional alternative to `DISCORD_CHANNEL_ID`. Set this to a user
-  ID and owotify will create/reuse that DM channel at startup.
+  ID, not a DM channel ID, and owotify will create/reuse that DM channel at startup.
 - `DISCORD_GATEWAY_ENABLED`: keep this `true` for a Gateway session check. Set it to `false`
   if you only want REST sending.
 
