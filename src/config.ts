@@ -9,12 +9,22 @@ const DEFAULT_SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:4377/callback'
 const DEFAULT_LRCLIB_BASE_URL = 'https://lrclib.net'
 const DEFAULT_DISCORD_API_BASE_URL = 'https://discord.com/api/v10'
 const DEFAULT_DISCORD_GATEWAY_URL = 'wss://gateway.discord.gg/?v=10&encoding=json'
+const DISCORD_INTENT_GUILDS = 1 << 0
+const DISCORD_INTENT_GUILD_MESSAGES = 1 << 9
+const DISCORD_INTENT_DIRECT_MESSAGES = 1 << 12
+const DISCORD_INTENT_MESSAGE_CONTENT = 1 << 15
+const DEFAULT_DISCORD_GATEWAY_INTENTS =
+  DISCORD_INTENT_GUILDS |
+  DISCORD_INTENT_GUILD_MESSAGES |
+  DISCORD_INTENT_DIRECT_MESSAGES |
+  DISCORD_INTENT_MESSAGE_CONTENT
 const DEFAULT_POLL_INTERVAL_MS = 2000
 const DEFAULT_LYRIC_LOOKAHEAD_MS = 350
 const DEFAULT_REWIND_RESET_THRESHOLD_MS = 3000
 const DEFAULT_MIN_MESSAGE_INTERVAL_MS = 1100
 const DEFAULT_MAX_LINES_PER_TICK = 4
 const DEFAULT_MAX_MESSAGE_LENGTH = 1900
+const DEFAULT_COMMAND_PREFIX = '!owo'
 const DEFAULT_TRACK_HEADER_TEMPLATE = 'Now playing: {track} - {artist}'
 const DEFAULT_LYRIC_LINE_TEMPLATE = '{line}'
 const DEFAULT_NO_LYRICS_TEMPLATE = 'No synced lyrics found for {track} - {artist}.'
@@ -32,10 +42,12 @@ export type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace'
 export interface AppConfig {
   discord: {
     token: string
-    channelId: string
+    channelId?: string
+    dmRecipientId?: string
     apiBaseUrl: string
     gatewayUrl: string
     gatewayEnabled: boolean
+    gatewayIntents: number
   }
   spotify: {
     clientId: string
@@ -55,6 +67,8 @@ export interface AppConfig {
     minMessageIntervalMs: number
     maxLinesPerTick: number
     maxMessageLength: number
+    commandsEnabled: boolean
+    commandPrefix: string
     sendTrackHeader: boolean
     trackHeaderTemplate: string
     lyricLineTemplate: string
@@ -110,7 +124,8 @@ const booleanFromEnv = (defaultValue: boolean) =>
 
 const envSchema = z.object({
   DISCORD_TOKEN: stringFromEnv,
-  DISCORD_CHANNEL_ID: stringFromEnv,
+  DISCORD_CHANNEL_ID: optionalStringFromEnv,
+  DISCORD_DM_RECIPIENT_ID: optionalStringFromEnv,
   DISCORD_API_BASE_URL: z
     .preprocess(emptyStringToUndefined, z.string().url().optional())
     .default(DEFAULT_DISCORD_API_BASE_URL),
@@ -118,6 +133,7 @@ const envSchema = z.object({
     .preprocess(emptyStringToUndefined, z.string().url().optional())
     .default(DEFAULT_DISCORD_GATEWAY_URL),
   DISCORD_GATEWAY_ENABLED: booleanFromEnv(true),
+  DISCORD_GATEWAY_INTENTS: integerFromEnv(DEFAULT_DISCORD_GATEWAY_INTENTS, 0),
   SPOTIFY_CLIENT_ID: stringFromEnv,
   SPOTIFY_CLIENT_SECRET: stringFromEnv,
   SPOTIFY_REFRESH_TOKEN: stringFromEnv,
@@ -144,6 +160,10 @@ const envSchema = z.object({
     MIN_MAX_MESSAGE_LENGTH,
     MAX_DISCORD_MESSAGE_LENGTH,
   ),
+  OWOTIFY_COMMANDS_ENABLED: booleanFromEnv(true),
+  OWOTIFY_COMMAND_PREFIX: z
+    .preprocess(emptyStringToUndefined, z.string().min(1).optional())
+    .default(DEFAULT_COMMAND_PREFIX),
   OWOTIFY_SEND_TRACK_HEADER: booleanFromEnv(true),
   OWOTIFY_TRACK_HEADER_TEMPLATE: z
     .preprocess(emptyStringToUndefined, z.string().optional())
@@ -176,13 +196,19 @@ export const loadConfig = (): AppConfig => {
 
   const env = parsedEnv.data
 
+  if (!env.DISCORD_CHANNEL_ID && !env.DISCORD_DM_RECIPIENT_ID) {
+    throw new ConfigError('Either DISCORD_CHANNEL_ID or DISCORD_DM_RECIPIENT_ID is required')
+  }
+
   return {
     discord: {
       token: env.DISCORD_TOKEN,
       channelId: env.DISCORD_CHANNEL_ID,
+      dmRecipientId: env.DISCORD_DM_RECIPIENT_ID,
       apiBaseUrl: env.DISCORD_API_BASE_URL,
       gatewayUrl: env.DISCORD_GATEWAY_URL,
       gatewayEnabled: env.DISCORD_GATEWAY_ENABLED,
+      gatewayIntents: env.DISCORD_GATEWAY_INTENTS,
     },
     spotify: {
       clientId: env.SPOTIFY_CLIENT_ID,
@@ -202,6 +228,8 @@ export const loadConfig = (): AppConfig => {
       minMessageIntervalMs: env.OWOTIFY_MIN_MESSAGE_INTERVAL_MS,
       maxLinesPerTick: env.OWOTIFY_MAX_LINES_PER_TICK,
       maxMessageLength: env.OWOTIFY_MAX_MESSAGE_LENGTH,
+      commandsEnabled: env.OWOTIFY_COMMANDS_ENABLED,
+      commandPrefix: env.OWOTIFY_COMMAND_PREFIX,
       sendTrackHeader: env.OWOTIFY_SEND_TRACK_HEADER,
       trackHeaderTemplate: env.OWOTIFY_TRACK_HEADER_TEMPLATE,
       lyricLineTemplate: env.OWOTIFY_LYRIC_LINE_TEMPLATE,

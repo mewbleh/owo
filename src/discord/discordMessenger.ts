@@ -3,7 +3,10 @@ import type { AxiosInstance } from 'axios'
 import WebSocket from 'ws'
 
 import { HttpRequestError } from '../errors'
+import { parseDiscordCommand } from './commandParser'
+import type { DiscordCommand } from './commandParser'
 import { splitMessage } from '../utils/message'
+import { toSafeLogError } from '../utils/safeError'
 import { sleep } from '../utils/sleep'
 
 const DISCORD_USER_AGENT = 'owotify/1.0.0'
@@ -22,16 +25,37 @@ const GATEWAY_OPCODE_HEARTBEAT = 1
 const GATEWAY_OPCODE_IDENTIFY = 2
 const GATEWAY_OPCODE_HELLO = 10
 const GATEWAY_READY_EVENT = 'READY'
-const DISCORD_EMPTY_INTENTS = 0
+const GATEWAY_MESSAGE_CREATE_EVENT = 'MESSAGE_CREATE'
 
 interface DiscordMessengerConfig {
   token: string
-  channelId: string
+  channelId?: string
+  dmRecipientId?: string
   apiBaseUrl: string
   gatewayUrl: string
   gatewayEnabled: boolean
+  gatewayIntents: number
+  commandsEnabled: boolean
+  commandPrefix: string
   minMessageIntervalMs: number
   maxMessageLength: number
+}
+
+export interface DiscordMessageCommand extends DiscordCommand {
+  authorId: string
+  channelId: string
+  messageId: string
+}
+
+type DiscordMessageCommandHandler = (command: DiscordMessageCommand) => Promise<void> | void
+
+interface DiscordUserResponse {
+  id: string
+  username: string
+}
+
+interface DiscordDmChannelResponse {
+  id: string
 }
 
 interface DiscordRateLimitResponse {
@@ -50,9 +74,16 @@ interface GatewayHelloData {
 }
 
 interface GatewayReadyData {
-  user: {
+  user: DiscordUserResponse
+}
+
+interface GatewayMessageCreateData {
+  id: string
+  channel_id: string
+  content: string
+  author: {
     id: string
-    username: string
+    username?: string
   }
 }
 
@@ -71,6 +102,9 @@ export class DiscordMessenger {
   private gatewaySocket: WebSocket | null = null
   private heartbeatTimer: NodeJS.Timeout | null = null
   private sequence: number | null = null
+  private selfUserId: string | null = null
+  private targetChannelId: string | null = null
+  private commandHandler: DiscordMessageCommandHandler | null = null
   private lastMessageAtMs = 0
   private isConnected = false
 
@@ -86,8 +120,17 @@ export class DiscordMessenger {
     })
   }
 
+  onCommand(handler: DiscordMessageCommandHandler): void {
+    this.commandHandler = handler
+  }
+
   async login(): Promise<void> {
+    if (this.config.commandsEnabled && !this.config.gatewayEnabled) {
+      throw new Error('Discord commands require DISCORD_GATEWAY_ENABLED=true')
+    }
+
     await this.validateToken()
+    await this.resolveTargetChannel()
 
     if (this.config.gatewayEnabled) {
       await this.connectGateway()
@@ -125,15 +168,52 @@ export class DiscordMessenger {
   }
 
   private async validateToken(): Promise<void> {
-    const response = await this.restClient.get('/users/@me')
+    const response = await this.restClient.get<DiscordUserResponse>('/users/@me')
 
     if (response.status < SUCCESS_STATUS_MIN || response.status > SUCCESS_STATUS_MAX) {
       throw new HttpRequestError('Discord token validation failed', response.status, '/users/@me')
     }
+
+    this.selfUserId = response.data.id
+  }
+
+  private async resolveTargetChannel(): Promise<void> {
+    if (this.config.dmRecipientId) {
+      this.targetChannelId = await this.createDmChannel(this.config.dmRecipientId)
+      return
+    }
+
+    if (this.config.channelId) {
+      this.targetChannelId = this.config.channelId
+      return
+    }
+
+    throw new Error('Either DISCORD_CHANNEL_ID or DISCORD_DM_RECIPIENT_ID is required')
+  }
+
+  private async createDmChannel(recipientId: string): Promise<string> {
+    // ref: https://discord.com/developers/docs/resources/user#create-dm
+    const response = await this.restClient.post<DiscordDmChannelResponse>('/users/@me/channels', {
+      recipient_id: recipientId,
+    })
+
+    if (response.status < SUCCESS_STATUS_MIN || response.status > SUCCESS_STATUS_MAX) {
+      throw new HttpRequestError(
+        'Discord create DM channel failed',
+        response.status,
+        '/users/@me/channels',
+      )
+    }
+
+    return response.data.id
   }
 
   private async createMessage(content: string, retryCount = 0): Promise<void> {
-    const endpoint = `/channels/${this.config.channelId}/messages`
+    if (!this.targetChannelId) {
+      throw new Error('Discord target channel has not been resolved')
+    }
+
+    const endpoint = `/channels/${this.targetChannelId}/messages`
     // ref: https://discord.com/developers/docs/resources/message#create-message
     const response = await this.restClient.post(endpoint, {
       allowed_mentions: {
@@ -232,7 +312,13 @@ export class DiscordMessenger {
         throw new Error('Discord Gateway READY payload did not include a user')
       }
 
+      this.selfUserId = readyData.user.id
       onReady()
+      return
+    }
+
+    if (payload.op === GATEWAY_OPCODE_DISPATCH && payload.t === GATEWAY_MESSAGE_CREATE_EVENT) {
+      this.handleMessageCreate(payload.d as GatewayMessageCreateData)
     }
   }
 
@@ -264,7 +350,7 @@ export class DiscordMessenger {
       op: GATEWAY_OPCODE_IDENTIFY,
       d: {
         token: this.config.token,
-        intents: DISCORD_EMPTY_INTENTS,
+        intents: this.config.gatewayIntents,
         properties: {
           os: process.platform,
           browser: 'owotify',
@@ -273,6 +359,34 @@ export class DiscordMessenger {
       },
       s: null,
       t: null,
+    })
+  }
+
+  private handleMessageCreate(message: GatewayMessageCreateData): void {
+    if (
+      !this.config.commandsEnabled ||
+      !this.commandHandler ||
+      message.channel_id !== this.targetChannelId ||
+      message.author.id !== this.selfUserId
+    ) {
+      return
+    }
+
+    const command = parseDiscordCommand(message.content, this.config.commandPrefix)
+
+    if (!command) {
+      return
+    }
+
+    void Promise.resolve(
+      this.commandHandler({
+        ...command,
+        authorId: message.author.id,
+        channelId: message.channel_id,
+        messageId: message.id,
+      }),
+    ).catch((error) => {
+      console.error(toSafeLogError(error))
     })
   }
 

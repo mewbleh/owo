@@ -22,6 +22,7 @@ selfbot framework.
 - Sends lyric lines to Discord with configurable pacing.
 - Supports custom message templates.
 - Includes raw Discord REST/Gateway transport.
+- Supports Discord selfbot control commands.
 - Avoids accidental mentions with `allowed_mentions: { parse: [] }`.
 - Retries Discord `429` responses with the returned delay.
 - Ships Docker, Docker Compose, Render, Railway, Nixpacks, and Procfile metadata.
@@ -87,6 +88,7 @@ Fill runtime secrets:
 ```env
 DISCORD_TOKEN=
 DISCORD_CHANNEL_ID=
+# or use DISCORD_DM_RECIPIENT_ID instead of DISCORD_CHANNEL_ID
 SPOTIFY_REFRESH_TOKEN=
 ```
 
@@ -96,6 +98,26 @@ Run locally:
 yarn dev
 ```
 
+## Selfbot Commands
+
+Commands are sent in the configured Discord channel or DM from the same account running the
+selfbot. The default prefix is `!owo`.
+
+| Command | Description |
+| --- | --- |
+| `!owo start` | Arm lyric posting. Lyrics begin when Spotify reports active playback. |
+| `!owo stop` | Stop lyric posting while keeping the process online. |
+| `!owo pause` | Alias for `stop`. |
+| `!owo resume` | Alias for `start`. |
+| `!owo status` | Show whether lyric posting is enabled and what track is loaded. |
+| `!owo skip` | Clear the current track session and reload lyrics on the next poll. |
+| `!owo reload` | Alias for `skip`. |
+| `!owo help` | Show available commands. |
+| `!owo shutdown` | Stop lyric posting and shut down the process. |
+
+Commands require `DISCORD_GATEWAY_ENABLED=true`, because they are received through Gateway
+`MESSAGE_CREATE` events.
+
 ## Getting Credentials
 
 ### Discord
@@ -104,6 +126,8 @@ yarn dev
   local use or secret storage in production.
 - `DISCORD_CHANNEL_ID`: enable Discord Developer Mode, right-click the target channel, then
   copy the channel ID.
+- `DISCORD_DM_RECIPIENT_ID`: optional alternative to `DISCORD_CHANNEL_ID`. Set this to a user
+  ID and owotify will create/reuse that DM channel at startup.
 - `DISCORD_GATEWAY_ENABLED`: keep this `true` for a Gateway session check. Set it to `false`
   if you only want REST sending.
 
@@ -121,10 +145,12 @@ All runtime configuration is environment-based.
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | - | Discord user token used for REST and Gateway auth. |
-| `DISCORD_CHANNEL_ID` | Yes | - | Target channel ID. |
+| `DISCORD_CHANNEL_ID` | Conditional | - | Target guild/text/DM channel ID. Required unless `DISCORD_DM_RECIPIENT_ID` is set. |
+| `DISCORD_DM_RECIPIENT_ID` | Conditional | - | User ID to DM. Required unless `DISCORD_CHANNEL_ID` is set. Takes priority when both are set. |
 | `DISCORD_API_BASE_URL` | No | `https://discord.com/api/v10` | Discord REST API base URL. |
 | `DISCORD_GATEWAY_URL` | No | `wss://gateway.discord.gg/?v=10&encoding=json` | Discord Gateway URL. |
 | `DISCORD_GATEWAY_ENABLED` | No | `true` | Enables Gateway session validation. |
+| `DISCORD_GATEWAY_INTENTS` | No | `37377` | Gateway intents used for selfbot command messages. |
 | `SPOTIFY_CLIENT_ID` | Yes | - | Spotify application client ID. |
 | `SPOTIFY_CLIENT_SECRET` | Yes | - | Spotify application client secret. |
 | `SPOTIFY_REFRESH_TOKEN` | Yes | - | Refresh token from `yarn spotify:auth`. |
@@ -138,6 +164,8 @@ All runtime configuration is environment-based.
 | `OWOTIFY_MIN_MESSAGE_INTERVAL_MS` | No | `1100` | Minimum delay between Discord messages. |
 | `OWOTIFY_MAX_LINES_PER_TICK` | No | `4` | Maximum lyric lines sent per poll tick. |
 | `OWOTIFY_MAX_MESSAGE_LENGTH` | No | `1900` | Maximum Discord message chunk length. |
+| `OWOTIFY_COMMANDS_ENABLED` | No | `true` | Enables Discord selfbot commands. |
+| `OWOTIFY_COMMAND_PREFIX` | No | `!owo` | Prefix used for Discord selfbot commands. |
 | `OWOTIFY_SEND_TRACK_HEADER` | No | `true` | Sends a header when a new track starts. |
 | `OWOTIFY_TRACK_HEADER_TEMPLATE` | No | `Now playing: {track} - {artist}` | New-track message template. |
 | `OWOTIFY_LYRIC_LINE_TEMPLATE` | No | `{line}` | Lyric line template. |
@@ -197,7 +225,7 @@ variable marked `sync: false`.
 Required secrets:
 
 - `DISCORD_TOKEN`
-- `DISCORD_CHANNEL_ID`
+- `DISCORD_CHANNEL_ID` or `DISCORD_DM_RECIPIENT_ID`
 - `SPOTIFY_CLIENT_ID`
 - `SPOTIFY_CLIENT_SECRET`
 - `SPOTIFY_REFRESH_TOKEN`

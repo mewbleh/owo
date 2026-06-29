@@ -5,11 +5,15 @@ import type { DiscordMessenger } from './discord/discordMessenger'
 import type { LyricsDocument, LyricsProvider, SpotifyTrack, SyncedLyricLine } from './types'
 import { formatTemplate } from './utils/template'
 import type { TemplateValues } from './utils/template'
+import type { DiscordMessageCommand } from './discord/discordMessenger'
+import { toSafeLogError } from './utils/safeError'
 import { sleep } from './utils/sleep'
 import type { SpotifyClient } from './spotify/spotifyClient'
 
 const MIN_SLEEP_MS = 50
 const NO_NEXT_LINE_INDEX = 0
+const STATUS_ENABLED_LABEL = 'enabled'
+const STATUS_STOPPED_LABEL = 'stopped'
 
 interface TrackSession {
   track: SpotifyTrack
@@ -21,6 +25,7 @@ interface TrackSession {
 
 export class OwotifyRunner {
   private isStopping = false
+  private isLyricStreamingEnabled = true
   private session: TrackSession | null = null
 
   constructor(
@@ -33,6 +38,7 @@ export class OwotifyRunner {
 
   async start(): Promise<void> {
     this.logger.info('Starting owotify')
+    this.discordMessenger.onCommand((command) => this.handleDiscordCommand(command))
     await this.discordMessenger.login()
     this.logger.info('Discord client connected')
 
@@ -42,7 +48,7 @@ export class OwotifyRunner {
       try {
         await this.tick()
       } catch (error) {
-        this.logger.error({ error }, 'Owotify tick failed')
+        this.logger.error({ error: toSafeLogError(error) }, 'Owotify tick failed')
       }
 
       const elapsedMs = Date.now() - tickStartedAtMs
@@ -57,9 +63,14 @@ export class OwotifyRunner {
   }
 
   private async tick(): Promise<void> {
+    if (!this.isLyricStreamingEnabled) {
+      return
+    }
+
     const playback = await this.spotifyClient.getCurrentlyPlayingTrack()
 
     if (!playback || !playback.isPlaying) {
+      this.session = null
       return
     }
 
@@ -100,6 +111,96 @@ export class OwotifyRunner {
 
     await this.sendFallbackLyricsIfNeeded(this.session)
     return this.session
+  }
+
+  private async handleDiscordCommand(command: DiscordMessageCommand): Promise<void> {
+    switch (command.name) {
+      case 'start':
+      case 'resume':
+        await this.enableLyricStreaming()
+        return
+      case 'stop':
+      case 'pause':
+        await this.disableLyricStreaming()
+        return
+      case 'status':
+        await this.sendStatus()
+        return
+      case 'skip':
+      case 'reload':
+        await this.reloadCurrentTrack()
+        return
+      case 'help':
+      case 'commands':
+        await this.sendCommandHelp()
+        return
+      case 'shutdown':
+      case 'exit':
+        await this.shutdownFromCommand()
+        return
+      default:
+        await this.discordMessenger.sendMessage(
+          `Unknown owotify command: ${command.name}. Try ${this.config.owotify.commandPrefix} help.`,
+        )
+    }
+  }
+
+  private async enableLyricStreaming(): Promise<void> {
+    this.isLyricStreamingEnabled = true
+    this.session = null
+    await this.discordMessenger.sendMessage(
+      'owotify lyric posting armed. Lyrics will start after Spotify reports active playback.',
+    )
+  }
+
+  private async disableLyricStreaming(): Promise<void> {
+    this.isLyricStreamingEnabled = false
+    this.session = null
+    await this.discordMessenger.sendMessage('owotify lyric posting stopped. Process is still online.')
+  }
+
+  private async reloadCurrentTrack(): Promise<void> {
+    this.session = null
+    await this.discordMessenger.sendMessage('owotify will reload the current track on the next poll.')
+  }
+
+  private async sendStatus(): Promise<void> {
+    const status = this.isLyricStreamingEnabled ? STATUS_ENABLED_LABEL : STATUS_STOPPED_LABEL
+    const track = this.session
+      ? `${this.session.track.name} - ${this.session.track.artists.join(', ')}`
+      : 'none'
+    const syncedLineCount = this.session?.lyrics?.syncedLines.length ?? 0
+    const nextLineIndex = this.session?.nextLineIndex ?? 0
+
+    await this.discordMessenger.sendMessage(
+      [
+        `owotify status: ${status}`,
+        `track: ${track}`,
+        `synced lines: ${syncedLineCount}`,
+        `next line: ${nextLineIndex}`,
+      ].join('\n'),
+    )
+  }
+
+  private async sendCommandHelp(): Promise<void> {
+    const prefix = this.config.owotify.commandPrefix
+
+    await this.discordMessenger.sendMessage(
+      [
+        'owotify commands:',
+        `${prefix} start - start lyric posting`,
+        `${prefix} stop - stop lyric posting but keep the process online`,
+        `${prefix} status - show current state`,
+        `${prefix} skip - reload the current track and lyrics`,
+        `${prefix} help - show this command list`,
+        `${prefix} shutdown - stop the process`,
+      ].join('\n'),
+    )
+  }
+
+  private async shutdownFromCommand(): Promise<void> {
+    await this.discordMessenger.sendMessage('owotify shutting down.')
+    await this.stop()
   }
 
   private async sendDueLyrics(session: TrackSession, progressMs: number): Promise<void> {

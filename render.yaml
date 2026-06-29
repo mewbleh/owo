@@ -12,6 +12,8 @@ services:
         sync: false
       - key: DISCORD_CHANNEL_ID
         sync: false
+      - key: DISCORD_DM_RECIPIENT_ID
+        sync: false
       - key: SPOTIFY_CLIENT_ID
         sync: false
       - key: SPOTIFY_CLIENT_SECRET
@@ -22,3 +24,9 @@ services:
         value: "US"
       - key: DISCORD_GATEWAY_ENABLED
         value: "true"
+      - key: DISCORD_GATEWAY_INTENTS
+        value: "37377"
+      - key: OWOTIFY_COMMANDS_ENABLED
+        value: "true"
+      - key: OWOTIFY_COMMAND_PREFIX
+        value: "!owo"

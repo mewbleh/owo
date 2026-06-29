@@ -15,9 +15,13 @@ const main = async (): Promise<void> => {
   const discordMessenger = new DiscordMessenger({
     token: config.discord.token,
     channelId: config.discord.channelId,
+    dmRecipientId: config.discord.dmRecipientId,
     apiBaseUrl: config.discord.apiBaseUrl,
     gatewayUrl: config.discord.gatewayUrl,
     gatewayEnabled: config.discord.gatewayEnabled,
+    gatewayIntents: config.discord.gatewayIntents,
+    commandsEnabled: config.owotify.commandsEnabled,
+    commandPrefix: config.owotify.commandPrefix,
     minMessageIntervalMs: config.owotify.minMessageIntervalMs,
     maxMessageLength: config.owotify.maxMessageLength,
   })
